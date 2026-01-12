@@ -39,7 +39,8 @@ def search_papers(topic):
     params = {
         "query": topic,
         "limit": 20,
-        "fields": "title,authors,year,abstract,url,citationCount"
+        "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
+
     }
     response = requests.get(url, params=params)
     if response.status_code == 200:
@@ -54,17 +55,22 @@ if search_btn and query:
         papers = search_papers(query)
 
     if papers:
-        st.session_state.papers_df = pd.DataFrame([
-            {
-                "Title": p.get("title"),
-                "Authors": ", ".join([a["name"] for a in p.get("authors", [])]),
-                "Year": p.get("year"),
-                "Citations": p.get("citationCount", 0),
-                "Abstract": p.get("abstract"),
-                "URL": p.get("url")
-            }
-            for p in papers
-        ])
+       st.session_state.papers_df = pd.DataFrame([
+    {
+        "Title": p.get("title"),
+        "Authors": ", ".join([a["name"] for a in p.get("authors", [])]),
+        "Year": p.get("year"),
+        "Citations": p.get("citationCount", 0),
+        "Venue": (
+            p.get("publicationVenue", {}).get("name")
+            if p.get("publicationVenue") else p.get("venue")
+        ),
+        "Abstract": p.get("abstract"),
+        "URL": p.get("url")
+    }
+    for p in papers
+  ])
+
     else:
         st.warning("No papers found.")
 
@@ -141,8 +147,14 @@ if st.session_state.papers_df is not None:
             for idx, row in df.iterrows():
                 st.markdown("---")
                 st.subheader(row["Title"])
+            
                 st.write(f"**Authors:** {row['Authors']}")
+            
+                if row["Venue"]:
+                    st.write(f"**Published in:** {row['Venue']}")
+            
                 st.write(f"**Year:** {row['Year']} | **Citations:** {row['Citations']}")
+            
 
                 if row["Abstract"]:
                     st.write(row["Abstract"][:600] + "...")
