@@ -66,10 +66,23 @@ def search_github(query):
 def search_paperswithcode(query):
     url = "https://paperswithcode.com/api/v1/search/"
     params = {"q": query}
-    r = requests.get(url, params=params)
-    if r.status_code == 200:
-        return r.json().get("results", [])[:2]
-    return []
+
+    try:
+        r = requests.get(url, params=params, timeout=10)
+
+        if r.status_code != 200:
+            return []
+
+        # Ensure response is JSON
+        if "application/json" not in r.headers.get("Content-Type", ""):
+            return []
+
+        data = r.json()
+        return data.get("results", [])[:2]
+
+    except Exception as e:
+        return []
+
 
 def search_kaggle(query):
     # Kaggle requires API token (KAGGLE_USERNAME & KAGGLE_KEY)
