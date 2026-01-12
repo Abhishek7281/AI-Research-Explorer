@@ -1,16 +1,17 @@
-# Phase 1
-#4
+#Phase 2
+#1
 import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
+import os
 
 # ---------------------------------
 # App Config
 # ---------------------------------
-st.set_page_config(page_title="AI Research Explorer (Phase 1)", layout="wide")
+st.set_page_config(page_title="AI Research Explorer (Phase 2)", layout="wide")
 st.title("🔍 AI Research Explorer")
-st.write("Search and explore research papers easily")
+st.write("Papers → Datasets → Code (Phase 2 MVP)")
 
 # ---------------------------------
 # Session State
@@ -32,45 +33,80 @@ query = st.text_input(
 search_btn = st.button("Search Papers")
 
 # ---------------------------------
-# Semantic Scholar API
+# APIs
 # ---------------------------------
 def search_papers(topic):
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": topic,
-        "limit": 20,
+        "limit": 10,
         "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
-
     }
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        return response.json().get("data", [])
+    r = requests.get(url, params=params)
+    if r.status_code == 200:
+        return r.json().get("data", [])
+    return []
+
+def search_zenodo(query):
+    url = "https://zenodo.org/api/records/"
+    params = {"q": query, "size": 2}
+    r = requests.get(url, params=params)
+    if r.status_code == 200:
+        return r.json().get("hits", {}).get("hits", [])
+    return []
+
+def search_github(query):
+    url = "https://api.github.com/search/repositories"
+    params = {"q": query, "sort": "stars", "order": "desc", "per_page": 2}
+    r = requests.get(url, params=params)
+    if r.status_code == 200:
+        return r.json().get("items", [])
+    return []
+
+def search_paperswithcode(query):
+    url = "https://paperswithcode.com/api/v1/search/"
+    params = {"q": query}
+    r = requests.get(url, params=params)
+    if r.status_code == 200:
+        return r.json().get("results", [])[:2]
+    return []
+
+def search_kaggle(query):
+    # Kaggle requires API token (KAGGLE_USERNAME & KAGGLE_KEY)
+    if not os.getenv("KAGGLE_USERNAME") or not os.getenv("KAGGLE_KEY"):
+        return None
+
+    headers = {"Authorization": f"Bearer {os.getenv('KAGGLE_KEY')}"}
+    url = "https://www.kaggle.com/api/v1/datasets/list"
+    params = {"search": query, "pageSize": 2}
+    r = requests.get(url, headers=headers, params=params)
+    if r.status_code == 200:
+        return r.json()
     return []
 
 # ---------------------------------
-# Fetch Papers (ONLY on Search)
+# Fetch Papers
 # ---------------------------------
 if search_btn and query:
     with st.spinner("Searching papers..."):
         papers = search_papers(query)
 
     if papers:
-       st.session_state.papers_df = pd.DataFrame([
-    {
-        "Title": p.get("title"),
-        "Authors": ", ".join([a["name"] for a in p.get("authors", [])]),
-        "Year": p.get("year"),
-        "Citations": p.get("citationCount", 0),
-        "Venue": (
-            p.get("publicationVenue", {}).get("name")
-            if p.get("publicationVenue") else p.get("venue")
-        ),
-        "Abstract": p.get("abstract"),
-        "URL": p.get("url")
-    }
-    for p in papers
-  ])
-
+        st.session_state.papers_df = pd.DataFrame([
+            {
+                "Title": p.get("title"),
+                "Authors": ", ".join([a["name"] for a in p.get("authors", [])]),
+                "Year": p.get("year"),
+                "Citations": p.get("citationCount", 0),
+                "Venue": (
+                    p.get("publicationVenue", {}).get("name")
+                    if p.get("publicationVenue") else p.get("venue")
+                ),
+                "Abstract": p.get("abstract"),
+                "URL": p.get("url")
+            }
+            for p in papers
+        ])
     else:
         st.warning("No papers found.")
 
@@ -81,100 +117,274 @@ if st.session_state.papers_df is not None:
     df = st.session_state.papers_df.copy()
 
     st.subheader("🔧 Filter & Sort")
-
     CURRENT_YEAR = datetime.now().year + 1
 
     col1, col2, col3 = st.columns(3)
-
     with col1:
-        from_year = st.number_input(
-            "From year",
-            min_value=1900,
-            max_value=CURRENT_YEAR,
-            value=2018,
-            step=1
-        )
-
+        from_year = st.number_input("From year", 1900, CURRENT_YEAR, 2018)
     with col2:
-        to_year = st.number_input(
-            "To year",
-            min_value=1900,
-            max_value=CURRENT_YEAR,
-            value=CURRENT_YEAR,
-            step=1
-        )
-
+        to_year = st.number_input("To year", 1900, CURRENT_YEAR, CURRENT_YEAR)
     with col3:
-        sort_option = st.selectbox(
-            "Sort by",
-            ["Newest First", "Most Citations"]
-        )
+        sort_option = st.selectbox("Sort by", ["Newest First", "Most Citations"])
 
-    # -----------------------------
-    # Safe Filtering
-    # -----------------------------
     df = df.dropna(subset=["Year"])
     df["Year"] = df["Year"].astype(int)
+    df = df[(df["Year"] >= from_year) & (df["Year"] <= to_year)]
 
-    if from_year > to_year:
-        st.error("From year cannot be greater than To year.")
-    else:
-        df = df[(df["Year"] >= from_year) & (df["Year"] <= to_year)]
+    df = df.sort_values(
+        by="Year" if sort_option == "Newest First" else "Citations",
+        ascending=False
+    )
 
-        if sort_option == "Newest First":
-            df = df.sort_values(by="Year", ascending=False)
-        else:
-            df = df.sort_values(by="Citations", ascending=False)
+    st.download_button(
+        "⬇️ Export to CSV",
+        data=df.to_csv(index=False),
+        file_name="research_papers.csv",
+        mime="text/csv"
+    )
+
+    st.subheader("📄 Research Papers")
+
+    for idx, row in df.iterrows():
+        st.markdown("---")
+        st.subheader(row["Title"])
+        st.write(f"**Authors:** {row['Authors']}")
+
+        if row["Venue"]:
+            st.write(f"**Published in:** {row['Venue']}")
+
+        st.write(f"**Year:** {row['Year']} | **Citations:** {row['Citations']}")
+
+        if row["Abstract"]:
+            st.write(row["Abstract"][:500] + "...")
+
+        if row["URL"]:
+            st.markdown(f"[🔗 View Paper]({row['URL']})")
 
         # -----------------------------
-        # Export
+        # Phase-2: Dataset + Code
         # -----------------------------
-        st.download_button(
-            "⬇️ Export to CSV",
-            data=df.to_csv(index=False),
-            file_name="research_papers.csv",
-            mime="text/csv"
-        )
+        with st.expander("📊 Datasets & 💻 Code"):
+            # Papers With Code
+            st.write("**Papers With Code**")
+            pwc = search_paperswithcode(row["Title"])
+            if pwc:
+                for item in pwc:
+                    st.markdown(f"- 💻 {item.get('paper_title')} ([Link](https://paperswithcode.com{item.get('url')}))")
+            else:
+                st.write("No Papers With Code result.")
 
-        # -----------------------------
-        # Display Papers
-        # -----------------------------
-        st.subheader("📄 Research Papers")
+            # Zenodo
+            st.write("**Zenodo Datasets**")
+            zenodo = search_zenodo(row["Title"])
+            if zenodo:
+                for z in zenodo:
+                    st.markdown(f"- 📊 [{z['metadata']['title']}]({z['links']['html']})")
+            else:
+                st.write("No Zenodo dataset found.")
 
-        if df.empty:
-            st.warning("No papers found for selected year range.")
-        else:
-            for idx, row in df.iterrows():
-                st.markdown("---")
-                st.subheader(row["Title"])
-            
-                st.write(f"**Authors:** {row['Authors']}")
-            
-                if row["Venue"]:
-                    st.write(f"**Published in:** {row['Venue']}")
-            
-                st.write(f"**Year:** {row['Year']} | **Citations:** {row['Citations']}")
-            
+            # Kaggle
+            st.write("**Kaggle Datasets**")
+            kaggle = search_kaggle(row["Title"])
+            if kaggle is None:
+                st.info("Kaggle not configured (API token required).")
+            elif kaggle:
+                for k in kaggle:
+                    st.markdown(f"- 📊 {k['title']}")
+            else:
+                st.write("No Kaggle dataset found.")
 
-                if row["Abstract"]:
-                    st.write(row["Abstract"][:600] + "...")
-
-                if row["URL"]:
-                    st.markdown(f"[🔗 View Paper]({row['URL']})")
-
-                if st.button("⭐ Bookmark", key=f"bm_{idx}"):
-                    st.session_state.bookmarks.append(row)
-                    st.success("Added to bookmarks")
+        if st.button("⭐ Bookmark", key=f"bm_{idx}"):
+            st.session_state.bookmarks.append(row)
+            st.success("Added to bookmarks")
 
 # ---------------------------------
-# Bookmarks Section
+# Bookmarks
 # ---------------------------------
 if st.session_state.bookmarks:
     st.markdown("---")
     st.subheader("⭐ Bookmarked Papers")
-
     for bm in st.session_state.bookmarks:
         st.write(f"• **{bm['Title']}** ({bm['Year']})")
+
+
+# Phase 1
+#4
+# import streamlit as st
+# import requests
+# import pandas as pd
+# from datetime import datetime
+
+# # ---------------------------------
+# # App Config
+# # ---------------------------------
+# st.set_page_config(page_title="AI Research Explorer (Phase 1)", layout="wide")
+# st.title("🔍 AI Research Explorer")
+# st.write("Search and explore research papers easily")
+
+# # ---------------------------------
+# # Session State
+# # ---------------------------------
+# if "papers_df" not in st.session_state:
+#     st.session_state.papers_df = None
+
+# if "bookmarks" not in st.session_state:
+#     st.session_state.bookmarks = []
+
+# # ---------------------------------
+# # User Input
+# # ---------------------------------
+# query = st.text_input(
+#     "Enter research topic",
+#     placeholder="e.g. Federated Learning in Healthcare"
+# )
+
+# search_btn = st.button("Search Papers")
+
+# # ---------------------------------
+# # Semantic Scholar API
+# # ---------------------------------
+# def search_papers(topic):
+#     url = "https://api.semanticscholar.org/graph/v1/paper/search"
+#     params = {
+#         "query": topic,
+#         "limit": 20,
+#         "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
+
+#     }
+#     response = requests.get(url, params=params)
+#     if response.status_code == 200:
+#         return response.json().get("data", [])
+#     return []
+
+# # ---------------------------------
+# # Fetch Papers (ONLY on Search)
+# # ---------------------------------
+# if search_btn and query:
+#     with st.spinner("Searching papers..."):
+#         papers = search_papers(query)
+
+#     if papers:
+#        st.session_state.papers_df = pd.DataFrame([
+#     {
+#         "Title": p.get("title"),
+#         "Authors": ", ".join([a["name"] for a in p.get("authors", [])]),
+#         "Year": p.get("year"),
+#         "Citations": p.get("citationCount", 0),
+#         "Venue": (
+#             p.get("publicationVenue", {}).get("name")
+#             if p.get("publicationVenue") else p.get("venue")
+#         ),
+#         "Abstract": p.get("abstract"),
+#         "URL": p.get("url")
+#     }
+#     for p in papers
+#   ])
+
+#     else:
+#         st.warning("No papers found.")
+
+# # ---------------------------------
+# # Display Results
+# # ---------------------------------
+# if st.session_state.papers_df is not None:
+#     df = st.session_state.papers_df.copy()
+
+#     st.subheader("🔧 Filter & Sort")
+
+#     CURRENT_YEAR = datetime.now().year + 1
+
+#     col1, col2, col3 = st.columns(3)
+
+#     with col1:
+#         from_year = st.number_input(
+#             "From year",
+#             min_value=1900,
+#             max_value=CURRENT_YEAR,
+#             value=2018,
+#             step=1
+#         )
+
+#     with col2:
+#         to_year = st.number_input(
+#             "To year",
+#             min_value=1900,
+#             max_value=CURRENT_YEAR,
+#             value=CURRENT_YEAR,
+#             step=1
+#         )
+
+#     with col3:
+#         sort_option = st.selectbox(
+#             "Sort by",
+#             ["Newest First", "Most Citations"]
+#         )
+
+#     # -----------------------------
+#     # Safe Filtering
+#     # -----------------------------
+#     df = df.dropna(subset=["Year"])
+#     df["Year"] = df["Year"].astype(int)
+
+#     if from_year > to_year:
+#         st.error("From year cannot be greater than To year.")
+#     else:
+#         df = df[(df["Year"] >= from_year) & (df["Year"] <= to_year)]
+
+#         if sort_option == "Newest First":
+#             df = df.sort_values(by="Year", ascending=False)
+#         else:
+#             df = df.sort_values(by="Citations", ascending=False)
+
+#         # -----------------------------
+#         # Export
+#         # -----------------------------
+#         st.download_button(
+#             "⬇️ Export to CSV",
+#             data=df.to_csv(index=False),
+#             file_name="research_papers.csv",
+#             mime="text/csv"
+#         )
+
+#         # -----------------------------
+#         # Display Papers
+#         # -----------------------------
+#         st.subheader("📄 Research Papers")
+
+#         if df.empty:
+#             st.warning("No papers found for selected year range.")
+#         else:
+#             for idx, row in df.iterrows():
+#                 st.markdown("---")
+#                 st.subheader(row["Title"])
+            
+#                 st.write(f"**Authors:** {row['Authors']}")
+            
+#                 if row["Venue"]:
+#                     st.write(f"**Published in:** {row['Venue']}")
+            
+#                 st.write(f"**Year:** {row['Year']} | **Citations:** {row['Citations']}")
+            
+
+#                 if row["Abstract"]:
+#                     st.write(row["Abstract"][:600] + "...")
+
+#                 if row["URL"]:
+#                     st.markdown(f"[🔗 View Paper]({row['URL']})")
+
+#                 if st.button("⭐ Bookmark", key=f"bm_{idx}"):
+#                     st.session_state.bookmarks.append(row)
+#                     st.success("Added to bookmarks")
+
+# # ---------------------------------
+# # Bookmarks Section
+# # ---------------------------------
+# if st.session_state.bookmarks:
+#     st.markdown("---")
+#     st.subheader("⭐ Bookmarked Papers")
+
+#     for bm in st.session_state.bookmarks:
+#         st.write(f"• **{bm['Title']}** ({bm['Year']})")
 
 #3
 # import streamlit as st
