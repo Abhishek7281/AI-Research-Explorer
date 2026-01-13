@@ -4,6 +4,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import os
+from datetime import datetime
 
 # -------------------------------------------------
 # App Config
@@ -19,7 +20,7 @@ if "papers_df" not in st.session_state:
     st.session_state.papers_df = None
 
 # -------------------------------------------------
-# Helpers
+# Helper: smart keyword query
 # -------------------------------------------------
 def build_search_query(title):
     stopwords = {
@@ -31,7 +32,7 @@ def build_search_query(title):
     return " ".join(keywords[:6])
 
 # -------------------------------------------------
-# APIs
+# API functions (SAFE)
 # -------------------------------------------------
 def search_papers(topic):
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
@@ -44,6 +45,60 @@ def search_papers(topic):
         r = requests.get(url, params=params, timeout=10)
         if r.status_code == 200:
             return r.json().get("data", [])
+    except:
+        pass
+    return []
+
+def search_paperswithcode(query):
+    try:
+        r = requests.get(
+            "https://paperswithcode.com/api/v1/search/",
+            params={"q": query},
+            timeout=10
+        )
+        if r.status_code == 200 and "application/json" in r.headers.get("Content-Type", ""):
+            return r.json().get("results", [])[:2]
+    except:
+        pass
+    return []
+
+def search_zenodo(query):
+    try:
+        r = requests.get(
+            "https://zenodo.org/api/records/",
+            params={"q": query, "size": 2},
+            timeout=10
+        )
+        if r.status_code == 200:
+            return r.json().get("hits", {}).get("hits", [])
+    except:
+        pass
+    return []
+
+def search_github(query):
+    try:
+        r = requests.get(
+            "https://api.github.com/search/repositories",
+            params={"q": query, "sort": "stars", "order": "desc", "per_page": 2},
+            timeout=10
+        )
+        if r.status_code == 200:
+            return r.json().get("items", [])
+    except:
+        pass
+    return []
+
+def search_kaggle(query):
+    if not os.getenv("KAGGLE_USERNAME") or not os.getenv("KAGGLE_KEY"):
+        return None
+    try:
+        r = requests.get(
+            "https://www.kaggle.com/api/v1/datasets/list",
+            params={"search": query, "pageSize": 2},
+            timeout=10
+        )
+        if r.status_code == 200:
+            return r.json()
     except:
         pass
     return []
@@ -83,53 +138,42 @@ if submitted and query:
         st.session_state.papers_df = None
 
 # -------------------------------------------------
-# FILTER & SORT (GOOGLE SCHOLAR STYLE)
+# FILTER, SORT & DISPLAY
 # -------------------------------------------------
 if st.session_state.papers_df is not None:
     df = st.session_state.papers_df.copy()
     df = df.dropna(subset=["Year"])
     df["Year"] = df["Year"].astype(int)
 
-    min_year = int(df["Year"].min())
-    max_year = int(df["Year"].max())
+    # Allow future years like Google Scholar
+    data_min_year = int(df["Year"].min())
+    data_max_year = max(int(df["Year"].max()), 2026)
 
     st.subheader("🛠 Filter & Sort")
 
-    # --- Slider (visual)
-    slider_range = st.slider(
-        "Filter by year",
-        min_year,
-        max_year,
-        (min_year, max_year)
-    )
-
-    # --- Custom range (Google Scholar style)
     col1, col2, col3 = st.columns([1, 1, 1])
 
     with col1:
         from_year = st.number_input(
             "From year",
-            min_value=min_year,
-            max_value=max_year,
-            value=slider_range[0]
+            min_value=1900,
+            max_value=data_max_year,
+            value=data_min_year
         )
 
     with col2:
         to_year = st.number_input(
             "To year",
-            min_value=min_year,
-            max_value=max_year,
-            value=slider_range[1]
+            min_value=1900,
+            max_value=data_max_year,
+            value=data_max_year
         )
 
     with col3:
         apply_filter = st.button("Apply")
 
     if apply_filter:
-        slider_range = (from_year, to_year)
-
-    # Apply year filter
-    df = df[(df["Year"] >= slider_range[0]) & (df["Year"] <= slider_range[1])]
+        df = df[(df["Year"] >= from_year) & (df["Year"] <= to_year)]
 
     sort_by = st.selectbox(
         "Sort by",
@@ -148,7 +192,7 @@ if st.session_state.papers_df is not None:
     )
 
     # -------------------------------------------------
-    # DISPLAY PAPERS
+    # PAPERS + DATASETS & CODE (RESTORED)
     # -------------------------------------------------
     st.subheader("📄 Research Papers")
 
@@ -167,6 +211,54 @@ if st.session_state.papers_df is not None:
 
         if row["URL"]:
             st.markdown(f"[🔗 View Paper]({row['URL']})")
+
+        with st.expander("📊 Datasets & 💻 Code"):
+            search_query = build_search_query(row["Title"])
+            st.caption(f"Search keywords: `{search_query}`")
+
+            st.write("**Papers With Code**")
+            pwc = search_paperswithcode(search_query)
+            if pwc:
+                for item in pwc:
+                    st.markdown(
+                        f"- 💻 {item.get('paper_title')} "
+                        f"([Link](https://paperswithcode.com{item.get('url')}))"
+                    )
+            else:
+                st.write("No direct code found.")
+
+            st.write("**GitHub Repositories**")
+            gh = search_github(search_query)
+            if gh:
+                for repo in gh:
+                    st.markdown(
+                        f"- 💻 [{repo['full_name']}]({repo['html_url']}) "
+                        f"⭐ {repo['stargazers_count']}"
+                    )
+            else:
+                st.write("No GitHub repository found.")
+
+            st.write("**Zenodo Datasets**")
+            zen = search_zenodo(search_query)
+            if zen:
+                for z in zen:
+                    st.markdown(
+                        f"- 📊 [{z['metadata']['title']}]({z['links']['html']}) "
+                        f"_(Possibly related dataset)_"
+                    )
+            else:
+                st.write("⚠️ Possibly related dataset not found on Zenodo.")
+
+            st.write("**Kaggle Datasets**")
+            kag = search_kaggle(search_query)
+            if kag is None:
+                st.info("Kaggle not connected (API token required).")
+            elif kag:
+                for k in kag:
+                    st.markdown(f"- 📊 {k['title']} _(Possibly related dataset)_")
+            else:
+                st.write("⚠️ Possibly related dataset not found on Kaggle.")
+)
 
 #3
 # import streamlit as st
