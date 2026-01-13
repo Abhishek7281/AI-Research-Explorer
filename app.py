@@ -5,7 +5,7 @@ import requests
 import pandas as pd
 import os
 import re
-from urllib.parse import urlparse
+from datetime import datetime
 
 # -------------------------------------------------
 # App Config
@@ -21,127 +21,134 @@ if "papers_df" not in st.session_state:
     st.session_state.papers_df = None
 
 # -------------------------------------------------
-# Text & Similarity Utilities
+# Helpers
 # -------------------------------------------------
-STOPWORDS = {
-    "a", "an", "the", "of", "and", "to", "in", "for", "with",
-    "using", "based", "via", "from", "through", "mostly",
-    "study", "analysis", "approach", "method"
-}
+def is_doi(text):
+    return text.startswith("10.") or "doi.org" in text
 
-def normalize_text(text):
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9 ]", " ", text)
-    return " ".join(w for w in text.split() if w not in STOPWORDS)
+def extract_doi(text):
+    if "doi.org/" in text:
+        return text.split("doi.org/")[-1]
+    return text
 
-def build_similarity_queries(title):
-    base = normalize_text(title)
-    words = base.split()[:6]
+def extract_s2_id(url):
+    return url.rstrip("/").split("/")[-1]
 
-    queries = {
-        "base": " ".join(words),
-        "dataset": " ".join(words + ["dataset", "benchmark"]),
-        "code": " ".join(words + ["implementation", "github", "pytorch"])
+def build_search_query(title):
+    stopwords = {
+        "a", "an", "the", "of", "and", "to", "in", "for", "with",
+        "using", "based", "via", "from", "through", "mostly"
     }
-    return queries
+    words = title.lower().split()
+    keywords = [w.strip(".,") for w in words if w.isalpha() and w not in stopwords]
+    return " ".join(keywords[:6])
 
 # -------------------------------------------------
-# URL-based Paper Resolver
+# Semantic Scholar API
 # -------------------------------------------------
-def resolve_paper_from_url(url):
-    # DOI handling
-    if "doi.org" in url:
-        doi = url.split("doi.org/")[-1]
-        api = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
-    # Semantic Scholar
-    elif "semanticscholar.org" in url:
-        paper_id = url.rstrip("/").split("/")[-1]
-        api = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}"
-    else:
-        return None
+def fetch_paper_by_doi(doi):
+    url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
+    params = {
+        "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
+    }
+    r = requests.get(url, params=params, timeout=10)
+    return r.json() if r.status_code == 200 else None
 
-    params = {"fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"}
-    try:
-        r = requests.get(api, params=params, timeout=10)
-        if r.status_code == 200:
-            return r.json()
-    except:
-        pass
-    return None
+def fetch_paper_by_id(pid):
+    url = f"https://api.semanticscholar.org/graph/v1/paper/{pid}"
+    params = {
+        "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
+    }
+    r = requests.get(url, params=params, timeout=10)
+    return r.json() if r.status_code == 200 else None
 
-# -------------------------------------------------
-# APIs
-# -------------------------------------------------
-def search_semantic_scholar(query):
+def search_papers(topic):
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
-        "query": query,
+        "query": topic,
         "limit": 10,
         "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
     }
+    r = requests.get(url, params=params, timeout=10)
+    return r.json().get("data", []) if r.status_code == 200 else []
+
+# -------------------------------------------------
+# External Sources (unchanged)
+# -------------------------------------------------
+def search_paperswithcode(query):
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get("https://paperswithcode.com/api/v1/search/", params={"q": query}, timeout=10)
         if r.status_code == 200:
-            return r.json().get("data", [])
+            return r.json().get("results", [])[:2]
     except:
         pass
     return []
 
-def safe_json(url, params):
+def search_zenodo(query):
     try:
-        r = requests.get(url, params=params, timeout=10)
-        if r.status_code == 200 and "application/json" in r.headers.get("Content-Type", ""):
-            return r.json()
+        r = requests.get("https://zenodo.org/api/records/", params={"q": query, "size": 2}, timeout=10)
+        if r.status_code == 200:
+            return r.json().get("hits", {}).get("hits", [])
     except:
         pass
-    return None
+    return []
 
-def search_paperswithcode(q):
-    data = safe_json("https://paperswithcode.com/api/v1/search/", {"q": q})
-    return data.get("results", [])[:2] if data else []
+def search_github(query):
+    try:
+        r = requests.get(
+            "https://api.github.com/search/repositories",
+            params={"q": query, "sort": "stars", "order": "desc", "per_page": 2},
+            timeout=10
+        )
+        if r.status_code == 200:
+            return r.json().get("items", [])
+    except:
+        pass
+    return []
 
-def search_github(q):
-    data = safe_json(
-        "https://api.github.com/search/repositories",
-        {"q": q, "sort": "stars", "order": "desc", "per_page": 2}
-    )
-    return data.get("items", []) if data else []
-
-def search_zenodo(q):
-    data = safe_json("https://zenodo.org/api/records/", {"q": q, "size": 2})
-    return data.get("hits", {}).get("hits", []) if data else []
-
-def search_kaggle(q):
-    if not os.getenv("KAGGLE_USERNAME"):
+def search_kaggle(query):
+    if not os.getenv("KAGGLE_USERNAME") or not os.getenv("KAGGLE_KEY"):
         return None
     try:
         r = requests.get(
             "https://www.kaggle.com/api/v1/datasets/list",
-            params={"search": q, "pageSize": 2},
+            params={"search": query, "pageSize": 2},
             timeout=10
         )
-        return r.json() if r.status_code == 200 else []
+        if r.status_code == 200:
+            return r.json()
     except:
-        return []
+        pass
+    return []
 
 # -------------------------------------------------
-# SEARCH FORM (TEXT OR URL)
+# SEARCH FORM (Topic / DOI / URL)
 # -------------------------------------------------
 with st.form("search_form"):
     query = st.text_input(
-        "Enter research topic or paper URL",
-        placeholder="Topic, DOI, Semantic Scholar URL"
+        "Enter research topic, DOI, or paper URL",
+        placeholder="e.g. rice irrigation OR 10.1016/j.agwat.2023.108250"
     )
-    submit = st.form_submit_button("🔍 Search")
+    submitted = st.form_submit_button("🔍 Search")
 
-if submit and query:
-    paper = None
+if submitted and query:
+    papers = []
 
-    if query.startswith("http"):
-        paper = resolve_paper_from_url(query)
-        papers = [paper] if paper else []
-    else:
-        papers = search_semantic_scholar(query)
+    with st.spinner("Searching..."):
+        if is_doi(query):
+            doi = extract_doi(query)
+            paper = fetch_paper_by_doi(doi)
+            if paper:
+                papers = [paper]
+
+        elif "semanticscholar.org" in query:
+            pid = extract_s2_id(query)
+            paper = fetch_paper_by_id(pid)
+            if paper:
+                papers = [paper]
+
+        else:
+            papers = search_papers(query)
 
     if papers:
         st.session_state.papers_df = pd.DataFrame([
@@ -157,18 +164,20 @@ if submit and query:
                 "Abstract": p.get("abstract"),
                 "URL": p.get("url")
             }
-            for p in papers if p
+            for p in papers
         ])
     else:
         st.warning("No paper found.")
         st.session_state.papers_df = None
 
 # -------------------------------------------------
-# DISPLAY PAPERS + STRONG SIMILARITY
+# DISPLAY (UNCHANGED, SAFE)
 # -------------------------------------------------
 if st.session_state.papers_df is not None:
     df = st.session_state.papers_df.dropna(subset=["Year"])
     df["Year"] = df["Year"].astype(int)
+
+    st.subheader("📄 Research Papers")
 
     for _, row in df.iterrows():
         st.markdown("---")
@@ -183,28 +192,28 @@ if st.session_state.papers_df is not None:
 
         st.markdown(f"[🔗 View Paper]({row['URL']})")
 
-        queries = build_similarity_queries(row["Title"])
+        with st.expander("📊 Datasets & 💻 Code"):
+            q = build_search_query(row["Title"])
 
-        with st.expander("📊 Possibly Related Datasets & 💻 Code"):
-            st.caption("Results are similarity-based, not exact matches.")
+            st.write("**Papers With Code**")
+            for r in search_paperswithcode(q):
+                st.markdown(f"- 💻 {r.get('paper_title')}")
 
-            pwc = search_paperswithcode(queries["code"])
-            gh = search_github(queries["code"])
-            zen = search_zenodo(queries["dataset"])
-            kag = search_kaggle(queries["dataset"])
+            st.write("**GitHub**")
+            for g in search_github(q):
+                st.markdown(f"- 💻 [{g['full_name']}]({g['html_url']})")
 
-            st.write("**Code (Similarity-based)**")
-            for r in pwc:
-                st.markdown(f"- 💻 {r.get('paper_title')} (PapersWithCode)")
-            for g in gh:
-                st.markdown(f"- 💻 [{g['full_name']}]({g['html_url']}) ⭐ {g['stargazers_count']}")
+            st.write("**Zenodo**")
+            for z in search_zenodo(q):
+                st.markdown(f"- 📊 {z['metadata']['title']}")
 
-            st.write("**Datasets (Possibly related)**")
-            for z in zen:
-                st.markdown(f"- 📊 [{z['metadata']['title']}]({z['links']['html']}) (Zenodo)")
+            st.write("**Kaggle**")
+            kag = search_kaggle(q)
             if kag:
                 for k in kag:
-                    st.markdown(f"- 📊 {k['title']} (Kaggle)")
+                    st.markdown(f"- 📊 {k['title']}")
+            else:
+                st.info("Kaggle not connected or no dataset found.")
 
 #4
 # import streamlit as st
