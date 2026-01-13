@@ -258,7 +258,6 @@ if st.session_state.papers_df is not None:
                     st.markdown(f"- 📊 {k['title']} _(Possibly related dataset)_")
             else:
                 st.write("⚠️ Possibly related dataset not found on Kaggle.")
-)
 
 #3
 # import streamlit as st
