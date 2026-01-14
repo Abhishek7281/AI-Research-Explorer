@@ -4,7 +4,6 @@ import streamlit as st
 import requests
 import pandas as pd
 import ollama
-import os
 
 # -------------------------------------------------
 # App Config
@@ -38,26 +37,32 @@ def search_papers(topic):
     return []
 
 # -------------------------------------------------
-# Phase-3: Local LLM Analysis
+# Phase-3: Local LLM Analysis (phi3)
 # -------------------------------------------------
 def local_ai_analysis(papers):
     try:
         content = ""
-        for i, p in enumerate(papers, 1):
-            content += f"""
-Paper {i}
+        count = 0
+
+        for p in papers:
+            if p.get("Abstract"):
+                count += 1
+                content += f"""
 Title: {p['Title']}
 Abstract: {p['Abstract']}
 """
+
+        if count == 0:
+            return "⚠️ No abstracts available for AI analysis."
 
         prompt = f"""
 You are a research assistant.
 
 Using ONLY the abstracts below:
-1. Write a simple summary
-2. List common methods
-3. Pros
-4. Cons
+1. Write a simple overall summary
+2. Common methods used
+3. Strengths
+4. Limitations
 5. Open research gaps
 
 Do NOT invent papers.
@@ -75,10 +80,10 @@ Abstracts:
         return response["message"]["content"]
 
     except Exception as e:
-        return None
+        return f"⚠️ Local LLM error: {e}"
 
 # -------------------------------------------------
-# Search UI
+# Search UI (Enter key supported)
 # -------------------------------------------------
 with st.form("search_form"):
     query = st.text_input(
@@ -124,32 +129,29 @@ if st.session_state.papers_df is not None:
         st.markdown("---")
         st.subheader(row["Title"])
         st.write(f"**Authors:** {row['Authors']}")
+
         if row["Venue"]:
             st.write(f"**Published in:** {row['Venue']}")
+
         st.write(f"**Year:** {row['Year']} | **Citations:** {row['Citations']}")
 
         if row["Abstract"]:
             st.write(row["Abstract"][:400] + "...")
 
-        st.markdown(f"[🔗 View Paper]({row['URL']})")
+        if row["URL"]:
+            st.markdown(f"[🔗 View Paper]({row['URL']})")
 
     # -------------------------------------------------
-    # Phase-3 AI Insights (Local)
+    # Phase-3: AI Insights
     # -------------------------------------------------
     st.markdown("---")
-    st.subheader("🧠 AI Research Insights (Local LLM)")
+    st.subheader("🧠 AI Research Insights (Local LLM – phi3)")
 
     with st.spinner("Local AI analyzing abstracts..."):
         analysis = local_ai_analysis(df.to_dict(orient="records"))
 
-    if analysis:
-        st.markdown(analysis)
-    else:
-        st.info(
-            "Local LLM not available.\n\n"
-            "Install & run Ollama to enable AI insights:\n"
-            "`ollama run mistral`"
-        )
+    st.markdown(analysis)
+
 
 #Phase 2
 #5
