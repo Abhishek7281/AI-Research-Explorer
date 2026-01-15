@@ -1,16 +1,29 @@
-#Phase 3
+#Phase 4 with gemini 
 #1
 import streamlit as st
 import requests
 import pandas as pd
-import ollama
+import os
+import google.generativeai as genai
 
 # -------------------------------------------------
 # App Config
 # -------------------------------------------------
 st.set_page_config(page_title="AI Research Explorer", layout="wide")
 st.title("🔍 AI Research Explorer")
-st.caption("Papers + Datasets + Code + Local AI Insights")
+st.caption("Semantic Scholar + Gemini AI Insights")
+
+# -------------------------------------------------
+# Gemini API Setup (Local + Streamlit Cloud)
+# -------------------------------------------------
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+else:
+    gemini_model = None
+
 
 # -------------------------------------------------
 # Session State
@@ -19,13 +32,13 @@ if "papers_df" not in st.session_state:
     st.session_state.papers_df = None
 
 # -------------------------------------------------
-# Semantic Scholar Search
+# Semantic Scholar Search (LIMIT = 3)
 # -------------------------------------------------
 def search_papers(topic):
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": topic,
-        "limit": 8,
+        "limit": 3,  # 🔥 IMPORTANT: keep small for fast AI
         "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
     }
     try:
@@ -37,61 +50,79 @@ def search_papers(topic):
     return []
 
 # -------------------------------------------------
-# Phase-3: Local LLM Analysis (phi3)
+# Gemini AI Analysis
 # -------------------------------------------------
-def local_ai_analysis(papers):
-    try:
-        content = ""
-        count = 0
+def gemini_ai_analysis(papers):
+    if not gemini_model:
+        return "⚠️ Gemini API key not configured."
 
-        for p in papers:
-            if p.get("Abstract"):
-                count += 1
-                content += f"""
+    abstracts = ""
+    count = 0
+
+    for p in papers:
+        if p.get("Abstract"):
+            count += 1
+            abstracts += f"""
 Title: {p['Title']}
 Abstract: {p['Abstract']}
 """
 
-        if count == 0:
-            return "⚠️ No abstracts available for AI analysis."
+    if count == 0:
+        return "⚠️ No abstracts available for AI analysis."
 
-        prompt = f"""
-You are a research assistant.
+    prompt = f"""
+You are a research assistant helping a PhD scholar.
 
-Using ONLY the abstracts below:
-1. Write a simple overall summary
-2. Common methods used
-3. Strengths
-4. Limitations
+STRICT RULES:
+- Do NOT list keywords
+- Do NOT extract phrases
+- Write academic insights only
+- Use ONLY the abstracts below
+
+TASK:
+1. Overall research summary
+2. Common methodologies
+3. Key strengths
+4. Main limitations
 5. Open research gaps
 
-Do NOT invent papers.
-Do NOT cite external sources.
+FORMAT EXACTLY AS:
 
-Abstracts:
-{content}
+### Overall Summary
+<paragraph>
+
+### Common Methods
+- point
+
+### Strengths
+- point
+
+### Limitations
+- point
+
+### Open Research Gaps
+- point
+
+ABSTRACTS:
+{abstracts}
 """
 
-        response = ollama.chat(
-            model="phi3",
-            messages=[{"role": "user", "content": prompt}]
-        )
-
-        return response["message"]["content"]
-
-    except Exception as e:
-        return f"⚠️ Local LLM error: {e}"
+    response = gemini_model.generate_content(prompt)
+    return response.text
 
 # -------------------------------------------------
-# Search UI (Enter key supported)
+# Search UI
 # -------------------------------------------------
 with st.form("search_form"):
     query = st.text_input(
         "Enter research topic",
-        placeholder="e.g. rice irrigation water efficiency"
+        placeholder="e.g. driver fatigue and road safety"
     )
     submitted = st.form_submit_button("🔍 Search")
 
+# -------------------------------------------------
+# Search Logic
+# -------------------------------------------------
 if submitted and query:
     with st.spinner("Searching research papers..."):
         papers = search_papers(query)
@@ -120,8 +151,7 @@ if submitted and query:
 # Display Results
 # -------------------------------------------------
 if st.session_state.papers_df is not None:
-    df = st.session_state.papers_df.dropna(subset=["Year"])
-    df["Year"] = df["Year"].astype(int)
+    df = st.session_state.papers_df
 
     st.subheader("📄 Research Papers")
 
@@ -129,11 +159,10 @@ if st.session_state.papers_df is not None:
         st.markdown("---")
         st.subheader(row["Title"])
         st.write(f"**Authors:** {row['Authors']}")
+        st.write(f"**Year:** {row['Year']} | **Citations:** {row['Citations']}")
 
         if row["Venue"]:
-            st.write(f"**Published in:** {row['Venue']}")
-
-        st.write(f"**Year:** {row['Year']} | **Citations:** {row['Citations']}")
+            st.write(f"**Venue:** {row['Venue']}")
 
         if row["Abstract"]:
             st.write(row["Abstract"][:400] + "...")
@@ -142,15 +171,173 @@ if st.session_state.papers_df is not None:
             st.markdown(f"[🔗 View Paper]({row['URL']})")
 
     # -------------------------------------------------
-    # Phase-3: AI Insights
+    # AI Insights (Optional Checkbox)
     # -------------------------------------------------
     st.markdown("---")
-    st.subheader("🧠 AI Research Insights (Local LLM – phi3)")
+    enable_ai = st.checkbox("🧠 Enable AI Research Insights (Gemini API)")
 
-    with st.spinner("Local AI analyzing abstracts..."):
-        analysis = local_ai_analysis(df.to_dict(orient="records"))
+    if enable_ai:
+        st.subheader("🧠 AI Research Insights (Gemini)")
+        st.info("Only top 3 papers are analyzed for speed & quality.")
 
-    st.markdown(analysis)
+        with st.spinner("Gemini analyzing research abstracts..."):
+            analysis = gemini_ai_analysis(df.to_dict(orient="records"))
+
+        st.markdown(analysis)
+
+#Phase 3
+#1
+# import streamlit as st
+# import requests
+# import pandas as pd
+# import ollama
+
+# # -------------------------------------------------
+# # App Config
+# # -------------------------------------------------
+# st.set_page_config(page_title="AI Research Explorer", layout="wide")
+# st.title("🔍 AI Research Explorer")
+# st.caption("Papers + Datasets + Code + Local AI Insights")
+
+# # -------------------------------------------------
+# # Session State
+# # -------------------------------------------------
+# if "papers_df" not in st.session_state:
+#     st.session_state.papers_df = None
+
+# # -------------------------------------------------
+# # Semantic Scholar Search
+# # -------------------------------------------------
+# def search_papers(topic):
+#     url = "https://api.semanticscholar.org/graph/v1/paper/search"
+#     params = {
+#         "query": topic,
+#         "limit": 8,
+#         "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
+#     }
+#     try:
+#         r = requests.get(url, params=params, timeout=10)
+#         if r.status_code == 200:
+#             return r.json().get("data", [])
+#     except:
+#         pass
+#     return []
+
+# # -------------------------------------------------
+# # Phase-3: Local LLM Analysis (phi3)
+# # -------------------------------------------------
+# def local_ai_analysis(papers):
+#     try:
+#         content = ""
+#         count = 0
+
+#         for p in papers:
+#             if p.get("Abstract"):
+#                 count += 1
+#                 content += f"""
+# Title: {p['Title']}
+# Abstract: {p['Abstract']}
+# """
+
+#         if count == 0:
+#             return "⚠️ No abstracts available for AI analysis."
+
+#         prompt = f"""
+# You are a research assistant.
+
+# Using ONLY the abstracts below:
+# 1. Write a simple overall summary
+# 2. Common methods used
+# 3. Strengths
+# 4. Limitations
+# 5. Open research gaps
+
+# Do NOT invent papers.
+# Do NOT cite external sources.
+
+# Abstracts:
+# {content}
+# """
+
+#         response = ollama.chat(
+#             model="phi3",
+#             messages=[{"role": "user", "content": prompt}]
+#         )
+
+#         return response["message"]["content"]
+
+#     except Exception as e:
+#         return f"⚠️ Local LLM error: {e}"
+
+# # -------------------------------------------------
+# # Search UI (Enter key supported)
+# # -------------------------------------------------
+# with st.form("search_form"):
+#     query = st.text_input(
+#         "Enter research topic",
+#         placeholder="e.g. rice irrigation water efficiency"
+#     )
+#     submitted = st.form_submit_button("🔍 Search")
+
+# if submitted and query:
+#     with st.spinner("Searching research papers..."):
+#         papers = search_papers(query)
+
+#     if papers:
+#         st.session_state.papers_df = pd.DataFrame([
+#             {
+#                 "Title": p.get("title"),
+#                 "Authors": ", ".join(a["name"] for a in p.get("authors", [])),
+#                 "Year": p.get("year"),
+#                 "Citations": p.get("citationCount", 0),
+#                 "Venue": (
+#                     p.get("publicationVenue", {}).get("name")
+#                     if p.get("publicationVenue") else p.get("venue")
+#                 ),
+#                 "Abstract": p.get("abstract"),
+#                 "URL": p.get("url")
+#             }
+#             for p in papers
+#         ])
+#     else:
+#         st.warning("No papers found.")
+#         st.session_state.papers_df = None
+
+# # -------------------------------------------------
+# # Display Results
+# # -------------------------------------------------
+# if st.session_state.papers_df is not None:
+#     df = st.session_state.papers_df.dropna(subset=["Year"])
+#     df["Year"] = df["Year"].astype(int)
+
+#     st.subheader("📄 Research Papers")
+
+#     for _, row in df.iterrows():
+#         st.markdown("---")
+#         st.subheader(row["Title"])
+#         st.write(f"**Authors:** {row['Authors']}")
+
+#         if row["Venue"]:
+#             st.write(f"**Published in:** {row['Venue']}")
+
+#         st.write(f"**Year:** {row['Year']} | **Citations:** {row['Citations']}")
+
+#         if row["Abstract"]:
+#             st.write(row["Abstract"][:400] + "...")
+
+#         if row["URL"]:
+#             st.markdown(f"[🔗 View Paper]({row['URL']})")
+
+#     # -------------------------------------------------
+#     # Phase-3: AI Insights
+#     # -------------------------------------------------
+#     st.markdown("---")
+#     st.subheader("🧠 AI Research Insights (Local LLM – phi3)")
+
+#     with st.spinner("Local AI analyzing abstracts..."):
+#         analysis = local_ai_analysis(df.to_dict(orient="records"))
+
+#     st.markdown(analysis)
 
 
 #Phase 2
