@@ -4,26 +4,28 @@ import streamlit as st
 import requests
 import pandas as pd
 import os
-import google.generativeai as genai
+from google import genai
 
 # -------------------------------------------------
 # App Config
 # -------------------------------------------------
-st.set_page_config(page_title="AI Research Explorer", layout="wide")
+st.set_page_config(
+    page_title="AI Research Explorer",
+    layout="wide"
+)
+
 st.title("🔍 AI Research Explorer")
-st.caption("Semantic Scholar + Gemini AI Insights")
+st.caption("Semantic Scholar search + Gemini AI research insights")
 
 # -------------------------------------------------
-# Gemini API Setup (Local + Streamlit Cloud)
+# Gemini API Setup (Secrets → Env fallback)
 # -------------------------------------------------
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
 
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel("gemini-pro")
+    client = genai.Client(api_key=GEMINI_API_KEY)
 else:
-    gemini_model = None
-
+    client = None
 
 # -------------------------------------------------
 # Session State
@@ -38,7 +40,7 @@ def search_papers(topic):
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": topic,
-        "limit": 3,  # 🔥 IMPORTANT: keep small for fast AI
+        "limit": 3,  # 🔥 keep small for fast AI
         "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
     }
     try:
@@ -50,10 +52,10 @@ def search_papers(topic):
     return []
 
 # -------------------------------------------------
-# Gemini AI Analysis
+# Gemini AI Analysis (NEW SDK – SAFE)
 # -------------------------------------------------
 def gemini_ai_analysis(papers):
-    if not gemini_model:
+    if not client:
         return "⚠️ Gemini API key not configured."
 
     abstracts = ""
@@ -74,10 +76,9 @@ Abstract: {p['Abstract']}
 You are a research assistant helping a PhD scholar.
 
 STRICT RULES:
-- Do NOT list keywords
-- Do NOT extract phrases
-- Write academic insights only
-- Use ONLY the abstracts below
+- Use ONLY the provided abstracts
+- Do NOT invent information
+- Write concise academic insights
 
 TASK:
 1. Overall research summary
@@ -86,7 +87,7 @@ TASK:
 4. Main limitations
 5. Open research gaps
 
-FORMAT EXACTLY AS:
+FORMAT:
 
 ### Overall Summary
 <paragraph>
@@ -107,8 +108,14 @@ ABSTRACTS:
 {abstracts}
 """
 
-    response = gemini_model.generate_content(prompt)
-    return response.text
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
+        return response.text
+    except Exception as e:
+        return f"⚠️ Gemini error: {e}"
 
 # -------------------------------------------------
 # Search UI
@@ -171,19 +178,20 @@ if st.session_state.papers_df is not None:
             st.markdown(f"[🔗 View Paper]({row['URL']})")
 
     # -------------------------------------------------
-    # AI Insights (Optional Checkbox)
+    # AI Insights (Optional)
     # -------------------------------------------------
     st.markdown("---")
-    enable_ai = st.checkbox("🧠 Enable AI Research Insights (Gemini API)")
+    enable_ai = st.checkbox("🧠 Enable AI Research Insights (Gemini)")
 
     if enable_ai:
-        st.subheader("🧠 AI Research Insights (Gemini)")
-        st.info("Only top 3 papers are analyzed for speed & quality.")
+        st.subheader("🧠 AI Research Insights")
+        st.info("Only top 3 papers are analyzed for speed and cost efficiency.")
 
         with st.spinner("Gemini analyzing research abstracts..."):
             analysis = gemini_ai_analysis(df.to_dict(orient="records"))
 
         st.markdown(analysis)
+
 
 #Phase 3
 #1
