@@ -40,7 +40,7 @@ def search_papers(topic):
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": topic,
-        "limit": 3,  # 🔥 keep small for fast AI
+        "limit": 1,  # 🔥 keep small for fast AI
         "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
     }
     try:
