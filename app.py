@@ -8,6 +8,15 @@ import math
 from google import genai
 
 # -------------------------------------------------
+# DOI NORMALIZATION (ADD HERE ✅)
+# -------------------------------------------------
+def normalize_doi(query):
+    query = query.strip()
+    if "doi.org/" in query:
+        return query.split("doi.org/")[-1]
+    return query
+    
+# -------------------------------------------------
 # App Config
 # -------------------------------------------------
 st.set_page_config(page_title="AI Research Explorer", layout="wide")
@@ -40,43 +49,69 @@ for k, v in {
 # -------------------------------------------------
 # Semantic Scholar Search
 # -------------------------------------------------
-def search_papers(query, from_year, to_year, sort_by):
-    # DOI → exact lookup
-    if query.lower().startswith("10."):
-        url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{query}"
-        r = requests.get(url, params={"fields": "title,authors,year,abstract,url,citationCount,venue"})
-        if r.status_code == 200:
-            return [r.json()]
-        return []
+def search_papers(query, from_year=None, to_year=None, limit=25):
+    """
+    Search papers using Semantic Scholar
+    Supports:
+    - DOI (exact match)
+    - Paper title / author / keywords
+    - Optional year filtering
+    """
 
-    # Normal search
+    query = normalize_doi(query)
+    papers = []
+
+    # -------------------------------------------------
+    # 1️⃣ DOI SEARCH (EXACT MATCH – SINGLE PAPER)
+    # -------------------------------------------------
+    if query.startswith("10."):
+        url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{query}"
+        params = {
+            "fields": "title,authors,year,abstract,url,citationCount,venue"
+        }
+
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            if r.status_code == 200:
+                return [r.json()]   # ✅ ONLY ONE PAPER
+            else:
+                return []
+        except:
+            return []
+
+    # -------------------------------------------------
+    # 2️⃣ NORMAL SEARCH (TITLE / AUTHOR / KEYWORDS)
+    # -------------------------------------------------
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
+
     params = {
         "query": query,
-        "limit": MAX_PAPERS,
+        "limit": limit,
         "fields": "title,authors,year,abstract,url,citationCount,venue"
     }
 
-    r = requests.get(url, params=params, timeout=10)
-    if r.status_code != 200:
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code != 200:
+            return []
+
+        data = r.json().get("data", [])
+
+        # -------------------------------------------------
+        # 3️⃣ OPTIONAL YEAR FILTER
+        # -------------------------------------------------
+        if from_year and to_year:
+            filtered = []
+            for p in data:
+                y = p.get("year")
+                if isinstance(y, int) and from_year <= y <= to_year:
+                    filtered.append(p)
+            data = filtered
+
+        return data
+
+    except:
         return []
-
-    papers = r.json().get("data", [])
-
-    # Year filter (optional)
-    if from_year and to_year:
-        papers = [
-            p for p in papers
-            if p.get("year") and from_year <= p["year"] <= to_year
-        ]
-
-    # Safe sorting
-    if sort_by == "Newest":
-        papers = sorted(papers, key=lambda x: x.get("year") or 0, reverse=True)
-    else:
-        papers = sorted(papers, key=lambda x: x.get("citationCount") or 0, reverse=True)
-
-    return papers
 
 # -------------------------------------------------
 # Gemini Summary (Per Paper)
