@@ -4,8 +4,8 @@ import streamlit as st
 import requests
 import pandas as pd
 import os
-from google import genai
 import math
+from google import genai
 
 # -------------------------------------------------
 # App Config
@@ -15,80 +15,87 @@ st.title("🔍 AI Research Explorer")
 st.caption("Semantic Scholar + Gemini AI + Datasets & Code")
 
 # -------------------------------------------------
-# Gemini API Setup (Secrets → Env fallback)
+# Gemini API Setup
 # -------------------------------------------------
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
-
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+# -------------------------------------------------
+# Constants
+# -------------------------------------------------
+PAPERS_PER_PAGE = 10
+MAX_PAPERS = 25
 
 # -------------------------------------------------
 # Session State
 # -------------------------------------------------
-for key in ["papers", "page", "selected_paper"]:
-    if key not in st.session_state:
-        st.session_state[key] = None if key != "page" else 1
+for k, v in {
+    "papers": [],
+    "page": 1,
+    "total_pages": 1
+}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 # -------------------------------------------------
-# Semantic Scholar Search (25 papers)
+# Semantic Scholar Search
 # -------------------------------------------------
-def search_papers(query, year_from, year_to):
+def search_papers(query, from_year, to_year, sort_by):
+    # DOI → exact lookup
+    if query.lower().startswith("10."):
+        url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{query}"
+        r = requests.get(url, params={"fields": "title,authors,year,abstract,url,citationCount,venue"})
+        if r.status_code == 200:
+            return [r.json()]
+        return []
+
+    # Normal search
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": query,
-        "limit": 25,
-        "fields": "title,authors,year,abstract,url,citationCount,externalIds"
+        "limit": MAX_PAPERS,
+        "fields": "title,authors,year,abstract,url,citationCount,venue"
     }
 
-    filters = []
-    if year_from:
-        filters.append(f"year>={year_from}")
-    if year_to:
-        filters.append(f"year<={year_to}")
-    if filters:
-        params["filter"] = ",".join(filters)
-
     r = requests.get(url, params=params, timeout=10)
-    if r.status_code == 200:
-        return r.json().get("data", [])
-    return []
+    if r.status_code != 200:
+        return []
+
+    papers = r.json().get("data", [])
+
+    # Year filter (optional)
+    if from_year and to_year:
+        papers = [
+            p for p in papers
+            if p.get("year") and from_year <= p["year"] <= to_year
+        ]
+
+    # Safe sorting
+    if sort_by == "Newest":
+        papers = sorted(papers, key=lambda x: x.get("year") or 0, reverse=True)
+    else:
+        papers = sorted(papers, key=lambda x: x.get("citationCount") or 0, reverse=True)
+
+    return papers
 
 # -------------------------------------------------
-# Gemini Summary for ONE paper
+# Gemini Summary (Per Paper)
 # -------------------------------------------------
 def gemini_summary(paper):
-    if not client:
-        return "⚠️ Gemini API key not configured."
-
-    if not paper.get("abstract"):
-        return "⚠️ No abstract available."
+    if not client or not paper.get("abstract"):
+        return "⚠️ Gemini unavailable or abstract missing."
 
     prompt = f"""
-You are a PhD-level research assistant.
+Summarize the paper academically.
 
-Analyze ONLY the abstract below.
+Title: {paper['title']}
+Abstract: {paper['abstract']}
 
-Tasks:
-1. Methods used
-2. Strengths
-3. Weaknesses
-4. Open research problems
-
-FORMAT:
-
-### Methods
-- point
-
-### Strengths
-- point
-
-### Weaknesses
-- point
-
-### Open Research Problems
-- point
-
-ABSTRACT:
-{paper['abstract']}
+Provide:
+- Methods
+- Pros
+- Cons
+- Open research problems
 """
 
     try:
@@ -101,86 +108,92 @@ ABSTRACT:
         return f"⚠️ Gemini error: {e}"
 
 # -------------------------------------------------
+# Dataset / Code Links
+# -------------------------------------------------
+def dataset_links(title):
+    q = title.replace(" ", "+")
+    return {
+        "GitHub": f"https://github.com/search?q={q}",
+        "PapersWithCode": f"https://paperswithcode.com/search?q={q}",
+        "Kaggle": f"https://www.kaggle.com/search?q={q}",
+        "Roboflow": f"https://universe.roboflow.com/search?q={q}"
+    }
+
+# -------------------------------------------------
 # Search UI
 # -------------------------------------------------
 with st.form("search_form"):
     query = st.text_input("Search by topic / author / title / DOI")
+
     col1, col2, col3 = st.columns(3)
-    year_from = col1.number_input("From year", 1900, 2100, 2018)
-    year_to = col2.number_input("To year", 1900, 2100, 2025)
-    sort_by = col3.selectbox("Sort by", ["Newest", "Citations"])
+    with col1:
+        enable_year = st.checkbox("Filter by year")
+    with col2:
+        from_year = st.number_input("From year", 1900, 2100, 2000) if enable_year else None
+    with col3:
+        to_year = st.number_input("To year", 1900, 2100, 2025) if enable_year else None
+
+    sort_by = st.selectbox("Sort by", ["Newest", "Citations"])
     submitted = st.form_submit_button("🔍 Search")
 
 # -------------------------------------------------
 # Search Logic
 # -------------------------------------------------
 if submitted and query:
-    st.session_state.page = 1
-    papers = search_papers(query, year_from, year_to)
-
-    if sort_by == "Newest":
-        papers.sort(key=lambda x: x.get("year", 0), reverse=True)
-    else:
-        papers.sort(key=lambda x: x.get("citationCount", 0), reverse=True)
-
+    papers = search_papers(query, from_year, to_year, sort_by)
     st.session_state.papers = papers
+    st.session_state.page = 1
+    st.session_state.total_pages = max(1, math.ceil(len(papers) / PAPERS_PER_PAGE))
 
 # -------------------------------------------------
-# Pagination (Google Scholar style)
+# Pagination
 # -------------------------------------------------
 papers = st.session_state.papers
 if papers:
-
-    PER_PAGE = 10
-    total_pages = math.ceil(len(papers) / PER_PAGE)
-
-    cols = st.columns(total_pages + 2)
-
-    if cols[0].button("◀ Prev", disabled=st.session_state.page == 1):
-        st.session_state.page -= 1
-
-    for i in range(1, total_pages + 1):
-        if cols[i].button(str(i)):
-            st.session_state.page = i
-
-    if cols[-1].button("Next ▶", disabled=st.session_state.page == total_pages):
-        st.session_state.page += 1
-
-    start = (st.session_state.page - 1) * PER_PAGE
-    end = start + PER_PAGE
+    page = st.session_state.page
+    start = (page - 1) * PAPERS_PER_PAGE
+    end = start + PAPERS_PER_PAGE
     page_papers = papers[start:end]
 
-    st.subheader(f"📄 Papers (Page {st.session_state.page}/{total_pages})")
+    st.subheader(f"📄 Papers (Page {page}/{st.session_state.total_pages})")
 
-    # -------------------------------------------------
-    # Display Papers
-    # -------------------------------------------------
-    for idx, p in enumerate(page_papers, start=start + 1):
+    for i, p in enumerate(page_papers, start=1):
         st.markdown("---")
-        st.write(f"**{idx}. {p.get('title')}**")
-        st.write("Authors:", ", ".join(a["name"] for a in p.get("authors", [])))
-        st.write(f"Year: {p.get('year')} | Citations: {p.get('citationCount', 0)}")
+        st.subheader(f"{start+i}. {p.get('title')}")
+
+        authors = ", ".join(a["name"] for a in p.get("authors", []))
+        st.write(f"**Authors:** {authors}")
+        st.write(f"**Year:** {p.get('year')} | **Citations:** {p.get('citationCount',0)}")
 
         if p.get("abstract"):
-            st.write(p["abstract"][:350] + "...")
+            st.write(p["abstract"][:400] + "...")
 
-        st.markdown(f"[🔗 View Paper]({p.get('url')})")
+        if p.get("url"):
+            st.markdown(f"[🔗 View Paper]({p['url']})")
 
-        # ---------- Dataset & Code Popup ----------
+        # Gemini summary per paper
+        if st.button("🧠 Gemini Summary", key=f"g{i}"):
+            with st.spinner("Analyzing paper..."):
+                st.info(gemini_summary(p))
+
+        # Dataset & Code popup
         with st.expander("📦 Datasets & Code"):
-            title = p.get("title", "")
-            st.markdown(f"""
-- 🔗 [GitHub](https://github.com/search?q={title})
-- 📄 [Papers With Code](https://paperswithcode.com/search?q={title})
-- 📊 [Kaggle Datasets](https://www.kaggle.com/search?q={title})
-- 📦 [Roboflow](https://universe.roboflow.com/search?q={title})
-""")
+            for name, link in dataset_links(p["title"]).items():
+                st.markdown(f"- [{name}]({link})")
 
-        # ---------- Gemini Summary Button ----------
-        if st.button(f"🧠 AI Summary ({idx})"):
-            with st.spinner("Gemini analyzing paper..."):
-                summary = gemini_summary(p)
-            st.markdown(summary)
+    # Pagination controls
+    c1, c2, c3 = st.columns([1,2,1])
+    with c1:
+        if st.button("⬅ Prev") and page > 1:
+            st.session_state.page -= 1
+            st.rerun()
+    with c3:
+        if st.button("Next ➡") and page < st.session_state.total_pages:
+            st.session_state.page += 1
+            st.rerun()
+
+else:
+    st.info("🔎 Search to see papers")
 
 
 #1
