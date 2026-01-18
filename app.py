@@ -1,5 +1,5 @@
 #Phase 4 with gemini 
-#2
+#3
 import streamlit as st
 import requests
 import pandas as pd
@@ -8,13 +8,26 @@ import math
 from google import genai
 
 # -------------------------------------------------
-# DOI NORMALIZATION (ADD HERE ✅)
+# DOI NORMALIZATION
 # -------------------------------------------------
 def normalize_doi(query):
     query = query.strip()
     if "doi.org/" in query:
         return query.split("doi.org/")[-1]
     return query
+
+# -------------------------------------------------
+# Google-Scholar-like Helpers
+# -------------------------------------------------
+def title_similarity(a, b):
+    a = a.lower()
+    b = b.lower()
+    a_words = set(a.split())
+    b_words = set(b.split())
+    return len(a_words & b_words) / max(len(a_words), 1)
+
+def is_exact_title_query(query):
+    return len(query.split()) >= 6
 
 # -------------------------------------------------
 # App Config
@@ -41,7 +54,10 @@ MAX_PAPERS = 25
 for k, v in {
     "papers": [],
     "page": 1,
-    "total_pages": 1
+    "total_pages": 1,
+    "best_paper": None,
+    "similar_papers": [],
+    "show_all": False
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -50,16 +66,9 @@ for k, v in {
 # Semantic Scholar Search
 # -------------------------------------------------
 def search_papers(query, from_year=None, to_year=None, limit=25):
-    """
-    Search papers using Semantic Scholar
-    Supports:
-    - DOI (exact match)
-    - Paper title / author / keywords
-    - Optional year filtering
-    """
     query = normalize_doi(query)
 
-    # 1️⃣ DOI SEARCH (EXACT MATCH – SINGLE PAPER)
+    # 1️⃣ DOI SEARCH
     if query.startswith("10."):
         url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{query}"
         params = {
@@ -68,13 +77,12 @@ def search_papers(query, from_year=None, to_year=None, limit=25):
         try:
             r = requests.get(url, params=params, timeout=10)
             if r.status_code == 200:
-                return [r.json()]  # ✅ ONLY ONE PAPER
-            else:
-                return []
+                return [r.json()]
+            return []
         except:
             return []
 
-    # 2️⃣ NORMAL SEARCH (TITLE / AUTHOR / KEYWORDS)
+    # 2️⃣ NORMAL SEARCH
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": query,
@@ -89,21 +97,26 @@ def search_papers(query, from_year=None, to_year=None, limit=25):
 
         data = r.json().get("data", [])
 
-        # 3️⃣ OPTIONAL YEAR FILTER
+        # Year filter
         if from_year and to_year:
-            filtered = []
+            data = [
+                p for p in data
+                if isinstance(p.get("year"), int)
+                and from_year <= p["year"] <= to_year
+            ]
+
+        # Google-Scholar-like ranking
+        if is_exact_title_query(query):
             for p in data:
-                y = p.get("year")
-                if isinstance(y, int) and from_year <= y <= to_year:
-                    filtered.append(p)
-            data = filtered
+                p["_score"] = title_similarity(query, p.get("title", ""))
+            data = sorted(data, key=lambda x: x.get("_score", 0), reverse=True)
 
         return data
     except:
         return []
 
 # -------------------------------------------------
-# Gemini Summary (Per Paper)
+# Gemini Summary
 # -------------------------------------------------
 def gemini_summary(paper):
     if not client or not paper.get("abstract"):
@@ -121,7 +134,6 @@ Provide:
 - Cons
 - Open research problems
 """
-
     try:
         res = client.models.generate_content(
             model="gemini-2.0-flash",
@@ -153,13 +165,9 @@ with st.form("search_form"):
     with col1:
         enable_year = st.checkbox("Filter by year")
     with col2:
-        from_year = st.number_input(
-            "From year", 1900, 2100, 2000
-        ) if enable_year else None
+        from_year = st.number_input("From year", 1900, 2100, 2000) if enable_year else None
     with col3:
-        to_year = st.number_input(
-            "To year", 1900, 2100, 2025
-        ) if enable_year else None
+        to_year = st.number_input("To year", 1900, 2100, 2025) if enable_year else None
 
     sort_by = st.selectbox("Sort by", ["Newest", "Citations"])
     submitted = st.form_submit_button("🔍 Search")
@@ -168,15 +176,41 @@ with st.form("search_form"):
 # Search Logic
 # -------------------------------------------------
 if submitted and query:
-    papers = search_papers(query, from_year, to_year, MAX_PAPERS)
-    st.session_state.papers = papers
+    results = search_papers(query, from_year, to_year, MAX_PAPERS)
+
+    if is_exact_title_query(query) and len(results) > 1:
+        st.session_state.best_paper = results[0]
+        st.session_state.similar_papers = results[1:]
+        st.session_state.papers = [results[0]]
+        st.session_state.show_all = False
+    else:
+        st.session_state.papers = results
+        st.session_state.similar_papers = []
+        st.session_state.show_all = True
+
     st.session_state.page = 1
     st.session_state.total_pages = max(
-        1, math.ceil(len(papers) / PAPERS_PER_PAGE)
+        1, math.ceil(len(st.session_state.papers) / PAPERS_PER_PAGE)
     )
 
 # -------------------------------------------------
-# Pagination
+# Google Scholar Message
+# -------------------------------------------------
+if st.session_state.best_paper and not st.session_state.show_all:
+    st.success("✅ Showing the best result for this search.")
+    if st.button("🔍 See all results"):
+        st.session_state.papers = (
+            [st.session_state.best_paper] +
+            st.session_state.similar_papers
+        )
+        st.session_state.show_all = True
+        st.session_state.total_pages = max(
+            1, math.ceil(len(st.session_state.papers) / PAPERS_PER_PAGE)
+        )
+        st.rerun()
+
+# -------------------------------------------------
+# Pagination & Display
 # -------------------------------------------------
 papers = st.session_state.papers
 
@@ -186,9 +220,7 @@ if papers:
     end = start + PAPERS_PER_PAGE
     page_papers = papers[start:end]
 
-    st.subheader(
-        f"📄 Papers (Page {page}/{st.session_state.total_pages})"
-    )
+    st.subheader(f"📄 Papers (Page {page}/{st.session_state.total_pages})")
 
     for i, p in enumerate(page_papers, start=1):
         st.markdown("---")
@@ -196,10 +228,7 @@ if papers:
 
         authors = ", ".join(a["name"] for a in p.get("authors", []))
         st.write(f"**Authors:** {authors}")
-        st.write(
-            f"**Year:** {p.get('year')} | "
-            f"**Citations:** {p.get('citationCount', 0)}"
-        )
+        st.write(f"**Year:** {p.get('year')} | **Citations:** {p.get('citationCount', 0)}")
 
         if p.get("abstract"):
             st.write(p["abstract"][:400] + "...")
@@ -207,18 +236,15 @@ if papers:
         if p.get("url"):
             st.markdown(f"[🔗 View Paper]({p['url']})")
 
-        # Gemini summary per paper
         if st.button("🧠 Gemini Summary", key=f"g{i}"):
             with st.spinner("Analyzing paper..."):
                 st.info(gemini_summary(p))
 
-        # Dataset & Code popup
         with st.expander("📦 Datasets & Code"):
             for name, link in dataset_links(p["title"]).items():
                 st.markdown(f"- [{name}]({link})")
 
-    # Pagination controls
-    c1, c2, c3 = st.columns([1, 2, 1])
+    c1, _, c3 = st.columns([1, 2, 1])
     with c1:
         if st.button("⬅ Prev") and page > 1:
             st.session_state.page -= 1
@@ -229,6 +255,237 @@ if papers:
             st.rerun()
 else:
     st.info("🔎 Search to see papers")
+
+#2
+# import streamlit as st
+# import requests
+# import pandas as pd
+# import os
+# import math
+# from google import genai
+
+# # -------------------------------------------------
+# # DOI NORMALIZATION (ADD HERE ✅)
+# # -------------------------------------------------
+# def normalize_doi(query):
+#     query = query.strip()
+#     if "doi.org/" in query:
+#         return query.split("doi.org/")[-1]
+#     return query
+
+# # -------------------------------------------------
+# # App Config
+# # -------------------------------------------------
+# st.set_page_config(page_title="AI Research Explorer", layout="wide")
+# st.title("🔍 AI Research Explorer")
+# st.caption("Semantic Scholar + Gemini AI + Datasets & Code")
+
+# # -------------------------------------------------
+# # Gemini API Setup
+# # -------------------------------------------------
+# GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
+# client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+# # -------------------------------------------------
+# # Constants
+# # -------------------------------------------------
+# PAPERS_PER_PAGE = 10
+# MAX_PAPERS = 25
+
+# # -------------------------------------------------
+# # Session State
+# # -------------------------------------------------
+# for k, v in {
+#     "papers": [],
+#     "page": 1,
+#     "total_pages": 1
+# }.items():
+#     if k not in st.session_state:
+#         st.session_state[k] = v
+
+# # -------------------------------------------------
+# # Semantic Scholar Search
+# # -------------------------------------------------
+# def search_papers(query, from_year=None, to_year=None, limit=25):
+#     """
+#     Search papers using Semantic Scholar
+#     Supports:
+#     - DOI (exact match)
+#     - Paper title / author / keywords
+#     - Optional year filtering
+#     """
+#     query = normalize_doi(query)
+
+#     # 1️⃣ DOI SEARCH (EXACT MATCH – SINGLE PAPER)
+#     if query.startswith("10."):
+#         url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{query}"
+#         params = {
+#             "fields": "title,authors,year,abstract,url,citationCount,venue"
+#         }
+#         try:
+#             r = requests.get(url, params=params, timeout=10)
+#             if r.status_code == 200:
+#                 return [r.json()]  # ✅ ONLY ONE PAPER
+#             else:
+#                 return []
+#         except:
+#             return []
+
+#     # 2️⃣ NORMAL SEARCH (TITLE / AUTHOR / KEYWORDS)
+#     url = "https://api.semanticscholar.org/graph/v1/paper/search"
+#     params = {
+#         "query": query,
+#         "limit": limit,
+#         "fields": "title,authors,year,abstract,url,citationCount,venue"
+#     }
+
+#     try:
+#         r = requests.get(url, params=params, timeout=10)
+#         if r.status_code != 200:
+#             return []
+
+#         data = r.json().get("data", [])
+
+#         # 3️⃣ OPTIONAL YEAR FILTER
+#         if from_year and to_year:
+#             filtered = []
+#             for p in data:
+#                 y = p.get("year")
+#                 if isinstance(y, int) and from_year <= y <= to_year:
+#                     filtered.append(p)
+#             data = filtered
+
+#         return data
+#     except:
+#         return []
+
+# # -------------------------------------------------
+# # Gemini Summary (Per Paper)
+# # -------------------------------------------------
+# def gemini_summary(paper):
+#     if not client or not paper.get("abstract"):
+#         return "⚠️ Gemini unavailable or abstract missing."
+
+#     prompt = f"""
+# Summarize the paper academically.
+
+# Title: {paper['title']}
+# Abstract: {paper['abstract']}
+
+# Provide:
+# - Methods
+# - Pros
+# - Cons
+# - Open research problems
+# """
+
+#     try:
+#         res = client.models.generate_content(
+#             model="gemini-2.0-flash",
+#             contents=prompt
+#         )
+#         return res.text
+#     except Exception as e:
+#         return f"⚠️ Gemini error: {e}"
+
+# # -------------------------------------------------
+# # Dataset / Code Links
+# # -------------------------------------------------
+# def dataset_links(title):
+#     q = title.replace(" ", "+")
+#     return {
+#         "GitHub": f"https://github.com/search?q={q}",
+#         "PapersWithCode": f"https://paperswithcode.com/search?q={q}",
+#         "Kaggle": f"https://www.kaggle.com/search?q={q}",
+#         "Roboflow": f"https://universe.roboflow.com/search?q={q}"
+#     }
+
+# # -------------------------------------------------
+# # Search UI
+# # -------------------------------------------------
+# with st.form("search_form"):
+#     query = st.text_input("Search by topic / author / title / DOI")
+
+#     col1, col2, col3 = st.columns(3)
+#     with col1:
+#         enable_year = st.checkbox("Filter by year")
+#     with col2:
+#         from_year = st.number_input(
+#             "From year", 1900, 2100, 2000
+#         ) if enable_year else None
+#     with col3:
+#         to_year = st.number_input(
+#             "To year", 1900, 2100, 2025
+#         ) if enable_year else None
+
+#     sort_by = st.selectbox("Sort by", ["Newest", "Citations"])
+#     submitted = st.form_submit_button("🔍 Search")
+
+# # -------------------------------------------------
+# # Search Logic
+# # -------------------------------------------------
+# if submitted and query:
+#     papers = search_papers(query, from_year, to_year, MAX_PAPERS)
+#     st.session_state.papers = papers
+#     st.session_state.page = 1
+#     st.session_state.total_pages = max(
+#         1, math.ceil(len(papers) / PAPERS_PER_PAGE)
+#     )
+
+# # -------------------------------------------------
+# # Pagination
+# # -------------------------------------------------
+# papers = st.session_state.papers
+
+# if papers:
+#     page = st.session_state.page
+#     start = (page - 1) * PAPERS_PER_PAGE
+#     end = start + PAPERS_PER_PAGE
+#     page_papers = papers[start:end]
+
+#     st.subheader(
+#         f"📄 Papers (Page {page}/{st.session_state.total_pages})"
+#     )
+
+#     for i, p in enumerate(page_papers, start=1):
+#         st.markdown("---")
+#         st.subheader(f"{start + i}. {p.get('title')}")
+
+#         authors = ", ".join(a["name"] for a in p.get("authors", []))
+#         st.write(f"**Authors:** {authors}")
+#         st.write(
+#             f"**Year:** {p.get('year')} | "
+#             f"**Citations:** {p.get('citationCount', 0)}"
+#         )
+
+#         if p.get("abstract"):
+#             st.write(p["abstract"][:400] + "...")
+
+#         if p.get("url"):
+#             st.markdown(f"[🔗 View Paper]({p['url']})")
+
+#         # Gemini summary per paper
+#         if st.button("🧠 Gemini Summary", key=f"g{i}"):
+#             with st.spinner("Analyzing paper..."):
+#                 st.info(gemini_summary(p))
+
+#         # Dataset & Code popup
+#         with st.expander("📦 Datasets & Code"):
+#             for name, link in dataset_links(p["title"]).items():
+#                 st.markdown(f"- [{name}]({link})")
+
+#     # Pagination controls
+#     c1, c2, c3 = st.columns([1, 2, 1])
+#     with c1:
+#         if st.button("⬅ Prev") and page > 1:
+#             st.session_state.page -= 1
+#             st.rerun()
+#     with c3:
+#         if st.button("Next ➡") and page < st.session_state.total_pages:
+#             st.session_state.page += 1
+#             st.rerun()
+# else:
+#     st.info("🔎 Search to see papers")
 
 
 
