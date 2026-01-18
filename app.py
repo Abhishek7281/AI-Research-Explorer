@@ -1,119 +1,102 @@
 #Phase 4 with gemini 
-#1
+#2
 import streamlit as st
 import requests
 import pandas as pd
 import os
 from google import genai
+import math
 
 # -------------------------------------------------
 # App Config
 # -------------------------------------------------
-st.set_page_config(
-    page_title="AI Research Explorer",
-    layout="wide"
-)
-
+st.set_page_config(page_title="AI Research Explorer", layout="wide")
 st.title("🔍 AI Research Explorer")
-st.caption("Semantic Scholar search + Gemini AI research insights")
+st.caption("Semantic Scholar + Gemini AI + Datasets & Code")
 
 # -------------------------------------------------
 # Gemini API Setup (Secrets → Env fallback)
 # -------------------------------------------------
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
 
-if GEMINI_API_KEY:
-    client = genai.Client(api_key=GEMINI_API_KEY)
-else:
-    client = None
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # -------------------------------------------------
 # Session State
 # -------------------------------------------------
-if "papers_df" not in st.session_state:
-    st.session_state.papers_df = None
+for key in ["papers", "page", "selected_paper"]:
+    if key not in st.session_state:
+        st.session_state[key] = None if key != "page" else 1
 
 # -------------------------------------------------
-# Semantic Scholar Search (LIMIT = 3)
+# Semantic Scholar Search (25 papers)
 # -------------------------------------------------
-def search_papers(topic):
+def search_papers(query, year_from, year_to):
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
-        "query": topic,
-        "limit": 1,  # 🔥 keep small for fast AI
-        "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
+        "query": query,
+        "limit": 25,
+        "fields": "title,authors,year,abstract,url,citationCount,externalIds"
     }
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        if r.status_code == 200:
-            return r.json().get("data", [])
-    except:
-        pass
+
+    filters = []
+    if year_from:
+        filters.append(f"year>={year_from}")
+    if year_to:
+        filters.append(f"year<={year_to}")
+    if filters:
+        params["filter"] = ",".join(filters)
+
+    r = requests.get(url, params=params, timeout=10)
+    if r.status_code == 200:
+        return r.json().get("data", [])
     return []
 
 # -------------------------------------------------
-# Gemini AI Analysis (NEW SDK – SAFE)
+# Gemini Summary for ONE paper
 # -------------------------------------------------
-def gemini_ai_analysis(papers):
+def gemini_summary(paper):
     if not client:
         return "⚠️ Gemini API key not configured."
 
-    abstracts = ""
-    count = 0
-
-    for p in papers:
-        if p.get("Abstract"):
-            count += 1
-            abstracts += f"""
-Title: {p['Title']}
-Abstract: {p['Abstract']}
-"""
-
-    if count == 0:
-        return "⚠️ No abstracts available for AI analysis."
+    if not paper.get("abstract"):
+        return "⚠️ No abstract available."
 
     prompt = f"""
-You are a research assistant helping a PhD scholar.
+You are a PhD-level research assistant.
 
-STRICT RULES:
-- Use ONLY the provided abstracts
-- Do NOT invent information
-- Write concise academic insights
+Analyze ONLY the abstract below.
 
-TASK:
-1. Overall research summary
-2. Common methodologies
-3. Key strengths
-4. Main limitations
-5. Open research gaps
+Tasks:
+1. Methods used
+2. Strengths
+3. Weaknesses
+4. Open research problems
 
 FORMAT:
 
-### Overall Summary
-<paragraph>
-
-### Common Methods
+### Methods
 - point
 
 ### Strengths
 - point
 
-### Limitations
+### Weaknesses
 - point
 
-### Open Research Gaps
+### Open Research Problems
 - point
 
-ABSTRACTS:
-{abstracts}
+ABSTRACT:
+{paper['abstract']}
 """
 
     try:
-        response = client.models.generate_content(
+        res = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt
         )
-        return response.text
+        return res.text
     except Exception as e:
         return f"⚠️ Gemini error: {e}"
 
@@ -121,76 +104,277 @@ ABSTRACTS:
 # Search UI
 # -------------------------------------------------
 with st.form("search_form"):
-    query = st.text_input(
-        "Enter research topic",
-        placeholder="e.g. driver fatigue and road safety"
-    )
+    query = st.text_input("Search by topic / author / title / DOI")
+    col1, col2, col3 = st.columns(3)
+    year_from = col1.number_input("From year", 1900, 2100, 2018)
+    year_to = col2.number_input("To year", 1900, 2100, 2025)
+    sort_by = col3.selectbox("Sort by", ["Newest", "Citations"])
     submitted = st.form_submit_button("🔍 Search")
 
 # -------------------------------------------------
 # Search Logic
 # -------------------------------------------------
 if submitted and query:
-    with st.spinner("Searching research papers..."):
-        papers = search_papers(query)
+    st.session_state.page = 1
+    papers = search_papers(query, year_from, year_to)
 
-    if papers:
-        st.session_state.papers_df = pd.DataFrame([
-            {
-                "Title": p.get("title"),
-                "Authors": ", ".join(a["name"] for a in p.get("authors", [])),
-                "Year": p.get("year"),
-                "Citations": p.get("citationCount", 0),
-                "Venue": (
-                    p.get("publicationVenue", {}).get("name")
-                    if p.get("publicationVenue") else p.get("venue")
-                ),
-                "Abstract": p.get("abstract"),
-                "URL": p.get("url")
-            }
-            for p in papers
-        ])
+    if sort_by == "Newest":
+        papers.sort(key=lambda x: x.get("year", 0), reverse=True)
     else:
-        st.warning("No papers found.")
-        st.session_state.papers_df = None
+        papers.sort(key=lambda x: x.get("citationCount", 0), reverse=True)
+
+    st.session_state.papers = papers
 
 # -------------------------------------------------
-# Display Results
+# Pagination (Google Scholar style)
 # -------------------------------------------------
-if st.session_state.papers_df is not None:
-    df = st.session_state.papers_df
+papers = st.session_state.papers
+if papers:
 
-    st.subheader("📄 Research Papers")
+    PER_PAGE = 10
+    total_pages = math.ceil(len(papers) / PER_PAGE)
 
-    for _, row in df.iterrows():
+    cols = st.columns(total_pages + 2)
+
+    if cols[0].button("◀ Prev", disabled=st.session_state.page == 1):
+        st.session_state.page -= 1
+
+    for i in range(1, total_pages + 1):
+        if cols[i].button(str(i)):
+            st.session_state.page = i
+
+    if cols[-1].button("Next ▶", disabled=st.session_state.page == total_pages):
+        st.session_state.page += 1
+
+    start = (st.session_state.page - 1) * PER_PAGE
+    end = start + PER_PAGE
+    page_papers = papers[start:end]
+
+    st.subheader(f"📄 Papers (Page {st.session_state.page}/{total_pages})")
+
+    # -------------------------------------------------
+    # Display Papers
+    # -------------------------------------------------
+    for idx, p in enumerate(page_papers, start=start + 1):
         st.markdown("---")
-        st.subheader(row["Title"])
-        st.write(f"**Authors:** {row['Authors']}")
-        st.write(f"**Year:** {row['Year']} | **Citations:** {row['Citations']}")
+        st.write(f"**{idx}. {p.get('title')}**")
+        st.write("Authors:", ", ".join(a["name"] for a in p.get("authors", [])))
+        st.write(f"Year: {p.get('year')} | Citations: {p.get('citationCount', 0)}")
 
-        if row["Venue"]:
-            st.write(f"**Venue:** {row['Venue']}")
+        if p.get("abstract"):
+            st.write(p["abstract"][:350] + "...")
 
-        if row["Abstract"]:
-            st.write(row["Abstract"][:400] + "...")
+        st.markdown(f"[🔗 View Paper]({p.get('url')})")
 
-        if row["URL"]:
-            st.markdown(f"[🔗 View Paper]({row['URL']})")
+        # ---------- Dataset & Code Popup ----------
+        with st.expander("📦 Datasets & Code"):
+            title = p.get("title", "")
+            st.markdown(f"""
+- 🔗 [GitHub](https://github.com/search?q={title})
+- 📄 [Papers With Code](https://paperswithcode.com/search?q={title})
+- 📊 [Kaggle Datasets](https://www.kaggle.com/search?q={title})
+- 📦 [Roboflow](https://universe.roboflow.com/search?q={title})
+""")
 
-    # -------------------------------------------------
-    # AI Insights (Optional)
-    # -------------------------------------------------
-    st.markdown("---")
-    enable_ai = st.checkbox("🧠 Enable AI Research Insights (Gemini)")
+        # ---------- Gemini Summary Button ----------
+        if st.button(f"🧠 AI Summary ({idx})"):
+            with st.spinner("Gemini analyzing paper..."):
+                summary = gemini_summary(p)
+            st.markdown(summary)
 
-    if enable_ai:
-        st.subheader("🧠 AI Research Insights")
-        st.info("Only top 3 papers are analyzed for speed and cost efficiency.")
 
-        with st.spinner("Gemini analyzing research abstracts..."):
-            analysis = gemini_ai_analysis(df.to_dict(orient="records"))
+#1
+# import streamlit as st
+# import requests
+# import pandas as pd
+# import os
+# from google import genai
 
-        st.markdown(analysis)
+# # -------------------------------------------------
+# # App Config
+# # -------------------------------------------------
+# st.set_page_config(
+#     page_title="AI Research Explorer",
+#     layout="wide"
+# )
+
+# st.title("🔍 AI Research Explorer")
+# st.caption("Semantic Scholar search + Gemini AI research insights")
+
+# # -------------------------------------------------
+# # Gemini API Setup (Secrets → Env fallback)
+# # -------------------------------------------------
+# GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
+
+# if GEMINI_API_KEY:
+#     client = genai.Client(api_key=GEMINI_API_KEY)
+# else:
+#     client = None
+
+# # -------------------------------------------------
+# # Session State
+# # -------------------------------------------------
+# if "papers_df" not in st.session_state:
+#     st.session_state.papers_df = None
+
+# # -------------------------------------------------
+# # Semantic Scholar Search (LIMIT = 3)
+# # -------------------------------------------------
+# def search_papers(topic):
+#     url = "https://api.semanticscholar.org/graph/v1/paper/search"
+#     params = {
+#         "query": topic,
+#         "limit": 1,  # 🔥 keep small for fast AI
+#         "fields": "title,authors,year,abstract,url,citationCount,venue,publicationVenue"
+#     }
+#     try:
+#         r = requests.get(url, params=params, timeout=10)
+#         if r.status_code == 200:
+#             return r.json().get("data", [])
+#     except:
+#         pass
+#     return []
+
+# # -------------------------------------------------
+# # Gemini AI Analysis (NEW SDK – SAFE)
+# # -------------------------------------------------
+# def gemini_ai_analysis(papers):
+#     if not client:
+#         return "⚠️ Gemini API key not configured."
+
+#     abstracts = ""
+#     count = 0
+
+#     for p in papers:
+#         if p.get("Abstract"):
+#             count += 1
+#             abstracts += f"""
+# Title: {p['Title']}
+# Abstract: {p['Abstract']}
+# """
+
+#     if count == 0:
+#         return "⚠️ No abstracts available for AI analysis."
+
+#     prompt = f"""
+# You are a research assistant helping a PhD scholar.
+
+# STRICT RULES:
+# - Use ONLY the provided abstracts
+# - Do NOT invent information
+# - Write concise academic insights
+
+# TASK:
+# 1. Overall research summary
+# 2. Common methodologies
+# 3. Key strengths
+# 4. Main limitations
+# 5. Open research gaps
+
+# FORMAT:
+
+# ### Overall Summary
+# <paragraph>
+
+# ### Common Methods
+# - point
+
+# ### Strengths
+# - point
+
+# ### Limitations
+# - point
+
+# ### Open Research Gaps
+# - point
+
+# ABSTRACTS:
+# {abstracts}
+# """
+
+#     try:
+#         response = client.models.generate_content(
+#             model="gemini-2.0-flash",
+#             contents=prompt
+#         )
+#         return response.text
+#     except Exception as e:
+#         return f"⚠️ Gemini error: {e}"
+
+# # -------------------------------------------------
+# # Search UI
+# # -------------------------------------------------
+# with st.form("search_form"):
+#     query = st.text_input(
+#         "Enter research topic",
+#         placeholder="e.g. driver fatigue and road safety"
+#     )
+#     submitted = st.form_submit_button("🔍 Search")
+
+# # -------------------------------------------------
+# # Search Logic
+# # -------------------------------------------------
+# if submitted and query:
+#     with st.spinner("Searching research papers..."):
+#         papers = search_papers(query)
+
+#     if papers:
+#         st.session_state.papers_df = pd.DataFrame([
+#             {
+#                 "Title": p.get("title"),
+#                 "Authors": ", ".join(a["name"] for a in p.get("authors", [])),
+#                 "Year": p.get("year"),
+#                 "Citations": p.get("citationCount", 0),
+#                 "Venue": (
+#                     p.get("publicationVenue", {}).get("name")
+#                     if p.get("publicationVenue") else p.get("venue")
+#                 ),
+#                 "Abstract": p.get("abstract"),
+#                 "URL": p.get("url")
+#             }
+#             for p in papers
+#         ])
+#     else:
+#         st.warning("No papers found.")
+#         st.session_state.papers_df = None
+
+# # -------------------------------------------------
+# # Display Results
+# # -------------------------------------------------
+# if st.session_state.papers_df is not None:
+#     df = st.session_state.papers_df
+
+#     st.subheader("📄 Research Papers")
+
+#     for _, row in df.iterrows():
+#         st.markdown("---")
+#         st.subheader(row["Title"])
+#         st.write(f"**Authors:** {row['Authors']}")
+#         st.write(f"**Year:** {row['Year']} | **Citations:** {row['Citations']}")
+
+#         if row["Venue"]:
+#             st.write(f"**Venue:** {row['Venue']}")
+
+#         if row["Abstract"]:
+#             st.write(row["Abstract"][:400] + "...")
+
+#         if row["URL"]:
+#             st.markdown(f"[🔗 View Paper]({row['URL']})")
+
+#     # -------------------------------------------------
+#     # AI Insights (Optional)
+#     # -------------------------------------------------
+#     st.markdown("---")
+#     enable_ai = st.checkbox("🧠 Enable AI Research Insights (Gemini)")
+
+#     if enable_ai:
+#         st.subheader("🧠 AI Research Insights")
+#         st.info("Only top 3 papers are analyzed for speed and cost efficiency.")
+
+#         with st.spinner("Gemini analyzing research abstracts..."):
+#             analysis = gemini_ai_analysis(df.to_dict(orient="records"))
+
+#         st.markdown(analysis)
 
 
 #Phase 3
