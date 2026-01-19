@@ -17,6 +17,16 @@ def normalize_doi(query):
     return query
 
 # -------------------------------------------------
+# Semantic Scholar URL NORMALIZATION ✅
+# -------------------------------------------------
+def normalize_semantic_scholar_url(query):
+    query = query.strip()
+    if "semanticscholar.org/paper/" in query:
+        return query.rstrip("/").split("/")[-1]
+    return None
+
+
+# -------------------------------------------------
 # Google-Scholar-like Helpers
 # -------------------------------------------------
 def title_similarity(a, b):
@@ -81,6 +91,22 @@ def search_papers(query, from_year=None, to_year=None, limit=25):
             return []
         except:
             return []
+
+    # 1️⃣ Semantic Scholar URL SEARCH (Paper ID)
+    paper_id = normalize_semantic_scholar_url(query)
+    if paper_id:
+        url = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}"
+        params = {
+            "fields": "title,authors,year,abstract,url,citationCount,venue"
+        }
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            if r.status_code == 200:
+                return [r.json()]  # ✅ exact paper
+            return []
+        except:
+            return []
+
 
     # 2️⃣ NORMAL SEARCH
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
