@@ -25,6 +25,38 @@ def normalize_semantic_scholar_url(query):
         return query.rstrip("/").split("/")[-1]
     return None
 
+# -------------------------------------------------
+# arXiv URL NORMALIZATION
+# -------------------------------------------------
+def normalize_arxiv_url(query):
+    query = query.strip()
+    if "arxiv.org/" in query:
+        # examples:
+        # https://arxiv.org/abs/2301.12345
+        # https://arxiv.org/pdf/2301.12345.pdf
+        parts = query.rstrip("/").split("/")
+        arxiv_id = parts[-1].replace(".pdf", "")
+        return arxiv_id
+    return None
+
+
+# -------------------------------------------------
+# IEEE / SPRINGER URL NORMALIZATION
+# -------------------------------------------------
+def normalize_publisher_url(query):
+    query = query.strip()
+
+    if "ieeexplore.ieee.org/document/" in query:
+        # https://ieeexplore.ieee.org/document/1234567
+        return query.rstrip("/").split("/")[-1]
+
+    if "link.springer.com/article/" in query:
+        # https://link.springer.com/article/10.1007/s12345-678-9012
+        return query.rstrip("/").split("/")[-1]
+
+    return None
+
+
 
 # -------------------------------------------------
 # Google-Scholar-like Helpers
@@ -78,6 +110,14 @@ for k, v in {
 def search_papers(query, from_year=None, to_year=None, limit=25):
     query = normalize_doi(query)
 
+    # -------------------------------------------------
+    # URL NORMALIZATION (Semantic Scholar / arXiv / IEEE / Springer)
+    # -------------------------------------------------
+    ss_id = normalize_semantic_scholar_url(query)
+    arxiv_id = normalize_arxiv_url(query)
+    publisher_id = normalize_publisher_url(query)
+
+
     # 1️⃣ DOI SEARCH
     if query.startswith("10."):
         url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{query}"
@@ -92,7 +132,7 @@ def search_papers(query, from_year=None, to_year=None, limit=25):
         except:
             return []
 
-    # 1️⃣ Semantic Scholar URL SEARCH (Paper ID)
+    # 1️ Semantic Scholar URL SEARCH (Paper ID)
     paper_id = normalize_semantic_scholar_url(query)
     if paper_id:
         url = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}"
@@ -107,8 +147,26 @@ def search_papers(query, from_year=None, to_year=None, limit=25):
         except:
             return []
 
+    # 2️ arXiv URL SEARCH
+    if arxiv_id:
+        url = f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{arxiv_id}"
+        params = {
+            "fields": "title,authors,year,abstract,url,citationCount,venue"
+        }
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            if r.status_code == 200:
+                return [r.json()]
+            return []
+        except:
+            return []
 
-    # 2️⃣ NORMAL SEARCH
+    # 3️ IEEE / Springer URL SEARCH (fallback to keyword)
+    if publisher_id:
+        query = publisher_id.replace("-", " ").replace(".", " ")
+
+
+    # 4 NORMAL SEARCH
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": query,
